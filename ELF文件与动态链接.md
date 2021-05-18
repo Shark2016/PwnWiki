@@ -42,7 +42,7 @@
 
 ### ELF文件格式
 
-![ELF文件格式](images/elf_format.jpg)
+![](images/elf_format.png)
 
 - ELF Header
    - 架构、ABI版本等基础信息
