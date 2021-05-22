@@ -1,5 +1,5 @@
 
-# ELF与动态链接
+# ELF文件与动态链接
 
 ## ELF文件格式
 
@@ -42,50 +42,50 @@
 
 ### ELF文件格式
 
-![ELF文件格式](images/elf_format.png)
+![ELF文件格式](images/ELF文件与动态链接/elf_format.png)
 
 - ELF Header
    - 架构、ABI版本等基础信息
    - program header table的位置和数量
    - section header table的位置和数量
 
-![ELF_HEADER](images/elf_header.png)
+![ELF_HEADER](images/ELF文件与动态链接/elf_header.png)
 
 - Program header table
    - 每个表项定义了一个segment
    - 每个segment可包含多个section
 
-![PROGRAM_HEADER](images/program_header.png)
+![PROGRAM_HEADER](images/ELF文件与动态链接/program_header.png)
 
 - Section header table
    - 每个表项定义了一个section
 
-![SECTION_HEADER](images/section_header.png)
+![SECTION_HEADER](images/ELF文件与动态链接/section_header.png)
 
 
 ### 进程内存空间
 
-![进程内存空间](images/task_memory_layout.png)
+![进程内存空间](images/ELF文件与动态链接/task_memory_layout.png)
 
 ### 内存空间中的栈帧 (Stack Frame)
 
-![栈帧](images/stack_frame.png)
+![栈帧](images/ELF文件与动态链接/stack_frame.png)
 
 ### 内存映射
 
-![内存映射](images/memory_image.png)
+![内存映射](images/ELF文件与动态链接/memory_image.png)
 
 通过/proc/[pid]/maps查看内存映射情况
 
-![maps](images/maps.png)
+![maps](images/ELF文件与动态链接/maps.png)
 
 ### 静态链接的程序的启动过程
 
-![静态链接的程序的启动过程](images/static_link.png)
+![静态链接的程序的启动过程](images/ELF文件与动态链接/static_link.png)
 
 ### 动态链接的程序的启动过程
 
-![动态链接的程序的启动过程](images/dym_link.png)
+![动态链接的程序的启动过程](images/ELF文件与动态链接/dym_link.png)
 
 ### 程序是如何启动的
 
@@ -118,7 +118,7 @@
 
 - ELF启动过程流程图
 
-![ELF启动过程](images/elf_launch.png)
+![ELF启动过程](images/ELF文件与动态链接/elf_launch.png)
 
 ## 动态链接(Dynamic Linking)
 
@@ -152,37 +152,37 @@ void main() {
 }
 ```
 
-![GOT](images/got.png)
+![GOT](images/ELF文件与动态链接/got.png)
 
 在gdb中，使用display命令可以设置每次单步执行后自动显示的内容，此次我们设置为显示后续三条指令。
 单步执行call puts@plt，跳转到puts函数的PLT代码，第一条指令是jmp *puts@got，即puts的GOT表项(左边图中GOT表项位于0x804a00c)中包含的地址，初始状态为0x80482e6，指向puts@plt+6
 
-![GOT](images/got2.png)
+![GOT](images/ELF文件与动态链接/got2.png)
 
 GOT表项初始化为puts@plt+6，第一次调用puts()函数会执行_dl_runtime_resolve，执行完毕后GOT表项内的值就会填充正确的puts()函数地址。
 后续所有对puts函数的调用都无需再次解析，可以直接找到相应代码。
 
-![GOT](images/got3.png)
+![GOT](images/ELF文件与动态链接/got3.png)
 
 GOT表项初始化为puts@plt+6，首先跳转到这里。
 puts@plt+6处的代码会push第一个参数0，然后跳到0x80482d0(称为PLT0)
 PLT0处的代码会push第一个参数0x804a004(此处存的是link_map)，然后跳到*0x804a008，实际是_dl_runtime_resolve函数，一个用来解析动态链接函数的函数。
 
 
-![GOT](images/got4.png)
+![GOT](images/ELF文件与动态链接/got4.png)
 
 #### GOT表位置
 
 GOT表位于.got和.got.plt Section
 
-![GOT](images/got_plt.png)
+![GOT](images/ELF文件与动态链接/got_plt.png)
 
    - .got Section中存放外部全局变量的GOT表，例如stdin/stdout/stderr，非延迟绑定
    - .got.plt Sectioon中存放外部函数的GOT表，例如printf，采用延迟绑定。
 
-![GOT](images/got_plt2.png)
+![GOT](images/ELF文件与动态链接/gdb_got.png)
 
-![GOT](images/gdb_got.png)
+![GOT](images/ELF文件与动态链接/got_plt2.png)
 
    - .got.plt前三项有特殊含义，第四项开始保存引用的各个外部函数的GOT表项：
        - 第一项保存的是.dynamic seciton的地址
@@ -192,56 +192,56 @@ GOT表位于.got和.got.plt Section
        - 第三项保存了_dl_runtime_resolve函数的地址
          _dl_runtime_resolve —— 位于loader中，用于解析外部函数符合的函数。解析完成后会直接执行该函数。
 
-![GOT](images/got_plt3.png)
-   
+![GOT](images/ELF文件与动态链接/got_plt3.png)
+
 #### .plt section
 
-![PLT_SECTION](images/plt_section.png)
+![PLT_SECTION](images/ELF文件与动态链接/plt_section.png)
 
-![PLT_SECTION](images/plt_section2.png)
+![PLT_SECTION](images/ELF文件与动态链接/plt_section2.png)
 
    - .plt Section中存放所有外部函数对应的PLT代码
 
 #### 延迟绑定(Lazy Binding)
 
-![Lazy Binding](images/lazy_binding.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding.png)
 
-![Lazy Binding](images/lazy_binding2.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding2.png)
 
-![Lazy Binding](images/lazy_binding3.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding3.png)
 
-![Lazy Binding](images/lazy_binding4.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding4.png)
 
-![Lazy Binding](images/lazy_binding5.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding5.png)
 
-![Lazy Binding](images/lazy_binding6.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding6.png)
 
-![Lazy Binding](images/lazy_binding7.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding7.png)
 
-![Lazy Binding](images/lazy_binding8.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding8.png)
 
-![Lazy Binding](images/lazy_binding9.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding9.png)
 
-![Lazy Binding](images/lazy_binding10.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding10.png)
 
-![Lazy Binding](images/lazy_binding11.png)
+![Lazy Binding](images/ELF文件与动态链接/lazy_binding11.png)
 
 #### 查找GOT表项
 
-![OBJDUMP_GOT](images/objdump_got.png)
+![OBJDUMP_GOT](images/ELF文件与动态链接/objdump_got.png)
 
 #### GOT表劫持
 
-![GOT HIJACKING](images/got_hijack.png)
+![GOT HIJACKING](images/ELF文件与动态链接/got_hijack.png)
 
    - 延迟绑定机制要求GOT表必须可写
    - 内存漏洞可导致GOT表项被改写，从而劫持PC
 
-![GOT HIJACKING](images/got_hijack1.png)
+![GOT HIJACKING](images/ELF文件与动态链接/got_hijack2.png)
 
-![GOT HIJACKING](images/got_hijack2.png)
+![GOT HIJACKING](images/ELF文件与动态链接/got_hijack3.png)
 
-![GOT HIJACKING](images/got_hijack3.png)
+![GOT HIJACKING](images/ELF文件与动态链接/got_hijack4.png)
 
    实例：GOT表劫持
 
