@@ -26,6 +26,7 @@
 - TOCTOU
 - 逻辑错误
 - scanf误用
+- system()命令注入
 
 ## 缓解技术与绕过介绍
 - Canary
