@@ -1,5 +1,5 @@
 
-# ELF文件与动态链接
+# ELF格式与动态链接
 
 ## ELF文件格式
 
@@ -229,50 +229,6 @@ GOT表位于.got和.got.plt Section
 #### 查找GOT表项
 
 ![OBJDUMP_GOT](images/ELF文件与动态链接/objdump_got.png)
-
-#### GOT表劫持
-
-![GOT HIJACKING](images/ELF文件与动态链接/got_hijack.png)
-
-   - 延迟绑定机制要求GOT表必须可写
-   - 内存漏洞可导致GOT表项被改写，从而劫持PC
-
-![GOT HIJACKING](images/ELF文件与动态链接/got_hijack2.png)
-
-![GOT HIJACKING](images/ELF文件与动态链接/got_hijack3.png)
-
-![GOT HIJACKING](images/ELF文件与动态链接/got_hijack4.png)
-
-   实例：GOT表劫持
-
-```
-#include <stdlib.h>
-#include <stdio.h>
-
-void win() {
-  puts("You Win!");
-}
-
-void main() {
-  unsigned int addr, value;
-  scanf("%x=%x", &addr, &value);
-  *(unsigned int *)addr = value;
-  printf("set %x=%x\n", addr, value);
-}
-```
-编译: gcc got_hijacking.c -m32 -o got_hijacking
-
-程序允许修改任意四字节，如何执行win函数呢？main函数在修改内存后调用了printf函数，因此可以考虑修改printf的GOT表项，将其劫持到win()函数。
-
-
-#### 如何防御GOT表劫持？
-   - 重定位只读 (Relocation Read Only) 缓解措施
-      * 编译选项：gcc -z,relro
-      * 在进入main()之前，所有的外部函数都会被解析
-      * 所有GOT表设置为只读
-      * 绕过方法
-        + 劫持未开启该保护的动态库中的GOT表(例如libc中的GOT表)
-        + 改写函数返回地址或函数指针
 
 ## 参考
 
