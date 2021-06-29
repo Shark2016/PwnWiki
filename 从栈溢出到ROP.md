@@ -2182,17 +2182,9 @@ payload = "\x00"*136 + p64(pop_ret_addr) + p64(binsh_addr) + p64(system_addr)
 ## 参考
 
 - 【长亭科技PWN系列公开课程 #2从栈溢出开始，教你写shellcode和ROP链 2020.04.17 长亭科技安全研究员 郑吉宏】
-- ROP练习 https://ropemporium.com/
 - 【长亭科技PWN系列公开课程 #3小试牛刀 ROP实战 2020.04.24 长亭科技安全研究员 施伟铭】
+- ROP练习 https://ropemporium.com/
 - https://bestwing.me/ropemporium-all-writeup.html
-- https://github.com/PHX2600/plaidctf-2013/tree/master/ropasaurusrex
-- 讲师私货：
-  https://hub.docker.com
-  https://hub.docker.com/repository/docker/beswing/swpwn
-  docker pull beswing/swpwn:18.04
-  docker image ls
-  swpwn attach
-  https://github.com/Escapingbug/ancypwn
 - https://blog.r0kithax.com/ctf/infosec/2020/10/20/rop-emporium-ret2csu-x64.html
 - glibc里的one gadget https://xz.aliyun.com/t/2720
 
